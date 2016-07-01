@@ -18,103 +18,80 @@ function run() {
     return __awaiter(this, void 0, void 0, function* () {
         try {
             tl.setResourcePath(path.join(__dirname, 'task.json'));
-            // if output is rooted ($(build.buildDirectory)/output/...), will resolve to fully qualified path,
-            // else relative to repo root
-            var buildSourceDirectory = tl.getVariable('build.sourcesDirectory');
-            var out = path.resolve(buildSourceDirectory, tl.getInput('outputPattern', true));
-            //Process working directory
-            var cwd = tl.getInput('cwd') || buildSourceDirectory;
-            tl.cd(cwd);
-            tl.debug('current working dir = ' + cwd);
-            // Create output directory if not present
-            tl.mkdirP(out);
-            // Store original Xcode developer directory so we can restore it after build completes if its overridden
-            /* var origXcodeDeveloperDir = process.env['DEVELOPER_DIR'];
-     
-             // Set the path to the developer tools for this process call if not the default
-             var xcodeDeveloperDir = tl.getInput('xcodeDeveloperDir', false);
-             if(xcodeDeveloperDir) {
-                 tl.debug('DEVELOPER_DIR was ' + origXcodeDeveloperDir)
-                 tl.debug('DEVELOPER_DIR for build set to ' + xcodeDeveloperDir);
-                 process.env['DEVELOPER_DIR'] = xcodeDeveloperDir;
-             }*/
-            // Use xctool or xcodebuild based on flag
-            var useXctool = tl.getBoolInput('useXctool', false);
+            //--------------------------------------------------------
+            // Tooling
+            //--------------------------------------------------------
+            tl.setEnvVar('DEVELOPER_DIR', tl.getInput('xcodeDeveloperDir', false));
+            var useXctool = (tl.getInput('useXctool', false) == "true");
             var tool = useXctool ? tl.which('xctool', true) : tl.which('xcodebuild', true);
             tl.debug('Tool selected: ' + tool);
-            // Get version
-            var xcv = tl.createToolRunner(tool);
-            xcv.arg('-version');
-            yield xcv.exec();
-            //setup build
-            var xcb = tl.createToolRunner(tool);
-            // Add common arguments for the build
-            var sdk = tl.getInput('sdk', false); //sdk is not required for watchkit
-            if (sdk) {
-                xcb.arg('-sdk');
-                xcb.arg(sdk);
-            }
-            var configuration = tl.getInput('configuration', false);
-            if (configuration) {
-                xcb.arg('-configuration');
-                xcb.arg(configuration);
-            }
-            // Args: Add optional workspace flag
-            var workspace = tl.getPathInput('xcWorkspacePath', false, false);
+            //--------------------------------------------------------
+            // Paths
+            //--------------------------------------------------------
+            tl.cd(tl.getInput('cwd'));
+            var outPath = path.resolve(process.cwd(), tl.getInput('outputPattern', true));
+            tl.mkdirP(outPath);
+            //--------------------------------------------------------
+            // Xcode args
+            //--------------------------------------------------------
+            /*var ws;
+            var wsPath = tl.getPathInput('xcWorkspacePath', false, false);
+            if(tl.filePathSupplied(wsPath)) {
+                ws = tl.globFirst(wsPath);
+                if (!ws) {
+                    throw 'Workspace is specified but it does not exist or is not a directory';
+                }
+            }*/
+            var ws = tl.getPathInput('xcWorkspacePath', false, false);
             if (tl.filePathSupplied('xcWorkspacePath')) {
-                var workspaceMatches = tl.glob(workspace);
+                var workspaceMatches = tl.glob(ws);
                 tl.debug("Found " + workspaceMatches.length + ' workspaces matching.');
                 if (workspaceMatches.length > 0) {
                     if (workspaceMatches.length > 1) {
                         tl.warning('multiple workspace matches.  using first.');
                     }
-                    xcb.arg('-workspace');
-                    xcb.pathArg(workspaceMatches[0]);
+                    ws = workspaceMatches[0];
                 }
                 else {
                     throw 'Workspace specified but it does not exist or is not a directory';
                 }
             }
-            else {
-                tl.debug('No workspace path specified in task.');
-            }
-            // Args: Add optional scheme flag
+            var sdk = tl.getInput('sdk', false);
+            var configuration = tl.getInput('configuration', false);
             var scheme = tl.getInput('scheme', false);
-            if (scheme) {
-                xcb.arg('-scheme');
-                xcb.arg(scheme);
+            var xctoolReporter = tl.getInput('xctoolReporter', false);
+            var actions = tl.getDelimitedInput('actions', ' ', true);
+            var out = path.resolve(process.cwd(), tl.getInput('outputPattern', true));
+            var packageApp = tl.getBoolInput('packageApp', true);
+            var args = tl.getInput('args', false);
+            //--------------------------------------------------------
+            // Exec Tools
+            //--------------------------------------------------------
+            // --- Xcode Version ---
+            var xcv = tl.createToolRunner(tool);
+            xcv.arg('-version');
+            yield xcv.exec(null);
+            //setup build
+            var xcb = tl.createToolRunner(tool);
+            xcb.argIf(sdk, ['-sdk', sdk]);
+            xcb.argIf(configuration, ['-configuration', configuration]);
+            if (ws) {
+                xcb.arg('-workspace');
+                xcb.pathArg(ws);
             }
-            else {
-                tl.debug('No scheme specified in task.');
-            }
-            // Args: Add output path config
-            xcb.arg(tl.getDelimitedInput('actions', ' ', true));
+            xcb.argIf(scheme, ['-scheme', scheme]);
+            xcb.argIf(useXctool && xctoolReporter, ['-reporter', 'plain', '-reporter', xctoolReporter]);
+            xcb.arg(actions);
             xcb.arg('DSTROOT=' + path.join(out, 'build.dst'));
             xcb.arg('OBJROOT=' + path.join(out, 'build.obj'));
             xcb.arg('SYMROOT=' + path.join(out, 'build.sym'));
             xcb.arg('SHARED_PRECOMPS_DIR=' + path.join(out, 'build.pch'));
-            //additional args
-            var args = tl.getInput('args', false);
             if (args) {
                 xcb.argString(args);
             }
-            //Test Results publish inputs
-            var testResultsFiles;
-            var publishResults = tl.getBoolInput('publishJUnitResults', false);
-            var xctoolReporter = tl.getInput('xctoolReporter', false);
-            if (xctoolReporter && 0 !== xctoolReporter.length) {
-                var xctoolReporterString = xctoolReporter.split(":");
-                if (xctoolReporterString && xctoolReporterString.length === 2) {
-                    testResultsFiles = path.resolve(cwd, xctoolReporterString[1].trim());
-                }
-            }
-            tl.debug('testResultsFiles = ' + testResultsFiles);
-            if (useXctool) {
-                if (xctoolReporter) {
-                    xcb.arg(['-reporter', 'plain', '-reporter', xctoolReporter]);
-                }
-            }
-            //signing options
+            //--------------------------------------------------------
+            // iOS signing and provisioning
+            //--------------------------------------------------------
             var signMethod = tl.getInput('signMethod', false);
             var keychainToDelete;
             var profileToDelete;
@@ -125,8 +102,8 @@ function run() {
                 var removeProfile = tl.getBoolInput('removeProfile', false);
                 //create a temporary keychain and install the p12 into that keychain
                 if (p12 && fs.lstatSync(p12).isFile()) {
-                    p12 = path.resolve(cwd, p12);
-                    var keychain = path.join(cwd, '_xcodetasktmp.keychain');
+                    p12 = path.resolve(process.cwd(), p12);
+                    var keychain = path.join(process.cwd(), '_xcodetasktmp.keychain');
                     var keychainPwd = Math.random();
                     yield sign.installCertInTemporaryKeyChain(keychain, keychainPwd.toString(), p12, p12pwd);
                     xcb.arg('OTHER_CODE_SIGN_FLAGS=--keychain=' + keychain);
@@ -145,16 +122,24 @@ function run() {
             }
             //run the Xcode build
             yield xcb.exec();
-            //publish test results
-            if (publishResults) {
-                if (!useXctool) {
-                    tl.warning("Check the 'Use xctool' checkbox and specify the xctool reporter format to publish test results. No results published.");
+            //--------------------------------------------------------
+            // Test publishing
+            //--------------------------------------------------------
+            var testResultsFiles;
+            var publishResults = tl.getBoolInput('publishJUnitResults', false);
+            if (publishResults && !useXctool) {
+                tl.warning("Check the 'Use xctool' checkbox and specify the xctool reporter format to publish test results. No results published.");
+            }
+            if (publishResults && useXctool && xctoolReporter && 0 !== xctoolReporter.length) {
+                var xctoolReporterString = xctoolReporter.split(":");
+                if (xctoolReporterString && xctoolReporterString.length === 2) {
+                    testResultsFiles = path.resolve(process.cwd(), xctoolReporterString[1].trim());
                 }
                 if (testResultsFiles && 0 !== testResultsFiles.length) {
                     //check for pattern in testResultsFiles
                     if (testResultsFiles.indexOf('*') >= 0 || testResultsFiles.indexOf('?') >= 0) {
                         tl.debug('Pattern found in testResultsFiles parameter');
-                        var allFiles = tl.find(cwd);
+                        var allFiles = tl.find(process.cwd());
                         var matchingTestResultsFiles = tl.match(allFiles, testResultsFiles, { matchBase: true });
                     }
                     else {
@@ -168,7 +153,9 @@ function run() {
                     tp.publish(matchingTestResultsFiles, false, "", "", "", true);
                 }
             }
-            //package apps to generate the .ipa
+            //--------------------------------------------------------
+            // Package app to generate .ipa
+            //--------------------------------------------------------
             if (tl.getBoolInput('packageApp', true) && sdk !== 'iphonesimulator') {
                 tl.debug('Packaging apps.');
                 var outPath = path.join(out, 'build.sym');
