@@ -1,6 +1,7 @@
 /// <reference path="../../definitions/node.d.ts" />
 /// <reference path="../../definitions/Q.d.ts" />
 /// <reference path="../../definitions/vsts-task-lib.d.ts" />
+/// <reference path="../../definitions/ios-signing-common.d.ts" />
 
 import path = require('path');
 import tl = require('vsts-task-lib/task');
@@ -18,25 +19,24 @@ async function run() {
         //--------------------------------------------------------
         tl.setEnvVar('DEVELOPER_DIR',tl.getInput('xcodeDeveloperDir', false));
 
-        var useXctool = (tl.getInput('useXctool', false) == "true");
-        var tool = useXctool ? tl.which('xctool', true) : tl.which('xcodebuild', true);
+        var useXctool : boolean = tl.getBoolInput('useXctool', false);
+        var tool : string = useXctool ? tl.which('xctool', true) : tl.which('xcodebuild', true);
         tl.debug('Tool selected: '+ tool);
 
         //--------------------------------------------------------
         // Paths
         //--------------------------------------------------------
-        tl.cd(tl.getInput('cwd'));
+        var cwd : string = tl.getInput('cwd');
+        tl.cd(cwd);
 
-        var outPath = path.resolve(process.cwd(), tl.getInput('outputPattern', true));
+        var outPath : string = path.resolve(cwd, tl.getInput('outputPattern', true));
         tl.mkdirP(outPath);
-
 
         //--------------------------------------------------------
         // Xcode args
         //--------------------------------------------------------
-        var ws = tl.getPathInput('xcWorkspacePath', false, false);
+        var ws : string = tl.getPathInput('xcWorkspacePath', false, false);
         if(tl.filePathSupplied('xcWorkspacePath')) {
-
             var workspaceMatches = tl.glob(ws);
             tl.debug("Found " + workspaceMatches.length + ' workspaces matching.');
 
@@ -51,26 +51,25 @@ async function run() {
             }
         }
 
-        var sdk = tl.getInput('sdk', false);
-        var configuration = tl.getInput('configuration', false);
-        var scheme = tl.getInput('scheme', false);
-        var xctoolReporter = tl.getInput('xctoolReporter', false);
-        var actions = tl.getDelimitedInput('actions', ' ', true);
-        var out = path.resolve(process.cwd(), tl.getInput('outputPattern', true));
-        var packageApp = tl.getBoolInput('packageApp', true);
-        var args = tl.getInput('args', false);
+        var sdk : string = tl.getInput('sdk', false);
+        var configuration : string  = tl.getInput('configuration', false);
+        var scheme : string = tl.getInput('scheme', false);
+        var xctoolReporter : string = tl.getInput('xctoolReporter', false);
+        var actions : string [] = tl.getDelimitedInput('actions', ' ', true);
+        var out : string = path.resolve(cwd, tl.getInput('outputPattern', true));
+        var packageApp : boolean = tl.getBoolInput('packageApp', true);
+        var args : string = tl.getInput('args', false);
 
         //--------------------------------------------------------
         // Exec Tools
         //--------------------------------------------------------
 
         // --- Xcode Version ---
-
-        var xcv = tl.createToolRunner(tool);
+        var xcv : ToolRunner = tl.createToolRunner(tool);
         xcv.arg('-version');
         await xcv.exec(null)
 
-        //setup build
+        // --- Xcode build arguments ---
         var xcb: ToolRunner = tl.createToolRunner(tool);
         xcb.argIf(sdk, ['-sdk', sdk]);
         xcb.argIf(configuration, ['-configuration', configuration]);
@@ -92,23 +91,23 @@ async function run() {
         //--------------------------------------------------------
         // iOS signing and provisioning
         //--------------------------------------------------------
-        var signMethod = tl.getInput('signMethod', false);
+        var signMethod : string = tl.getInput('signMethod', false);
         var keychainToDelete : string;
         var profileToDelete : string;
 
         if(signMethod === 'file') {
-            var p12 = tl.getPathInput('p12', false, false);
-            var p12pwd = tl.getInput('p12pwd', false);
-            var provProfilePath = tl.getPathInput('provProfile', false);
-            var removeProfile = tl.getBoolInput('removeProfile', false);
+            var p12 : string = tl.getPathInput('p12', false, false);
+            var p12pwd : string = tl.getInput('p12pwd', false);
+            var provProfilePath : string = tl.getPathInput('provProfile', false);
+            var removeProfile : boolean = tl.getBoolInput('removeProfile', false);
 
-            //create a temporary keychain and install the p12 into that keychain
             if(p12 && fs.lstatSync(p12).isFile()) {
-                p12 = path.resolve(process.cwd(), p12);
-                var keychain = path.join(process.cwd(), '_xcodetasktmp.keychain');
-                var keychainPwd = Math.random();
+                p12 = path.resolve(cwd, p12);
+                var keychain : string = path.join(cwd, '_xcodetasktmp.keychain');
+                var keychainPwd : string = Math.random().toString();
 
-                await sign.installCertInTemporaryKeyChain(keychain, keychainPwd.toString(), p12, p12pwd);
+                //create a temporary keychain and install the p12 into that keychain
+                await sign.installCertInTemporaryKeychain(keychain, keychainPwd, p12, p12pwd);
                 xcb.arg('OTHER_CODE_SIGN_FLAGS=--keychain=' + keychain);
                 keychainToDelete = keychain;
 
@@ -116,6 +115,7 @@ async function run() {
                 var signIdentity = await sign.findSigningIdentity(keychain);
                 xcb.arg('CODE_SIGN_IDENTITY=' + signIdentity);
 
+                //determine the provisioning profile UUID
                 var provProfileUUID = await sign.getProvisioningProfileUUID(provProfilePath);
                 xcb.arg('PROVISIONING_PROFILE=' + provProfileUUID);
 
@@ -125,7 +125,18 @@ async function run() {
             }
 
         } else if (signMethod === 'id') {
-            //TODO
+            var unlockDefaultKeychain : boolean = tl.getBoolInput('unlockDefaultKeychain');
+            var defaultKeychainPassword : string = tl.getInput('defaultKeychainPassword');
+            if(unlockDefaultKeychain) {
+                var defaultKeychain : string = await sign.getDefaultKeychainPath();
+                await sign.unlockKeychain(defaultKeychain, defaultKeychainPassword);
+            }
+
+            var signIdentity : string = tl.getInput('iosSigningIdentity');
+            xcb.arg('CODE_SIGN_IDENTITY=' + signIdentity);
+
+            var provProfileUUID : string = tl.getInput('provProfileUuid');
+            xcb.arg('PROVISIONING_PROFILE=' + provProfileUUID);
         }
 
         //run the Xcode build
@@ -135,8 +146,8 @@ async function run() {
         // Test publishing
         //--------------------------------------------------------
 
-        var testResultsFiles;
-        var publishResults = tl.getBoolInput('publishJUnitResults', false);
+        var testResultsFiles : string;
+        var publishResults : boolean = tl.getBoolInput('publishJUnitResults', false);
         if (publishResults && !useXctool) {
             tl.warning("Check the 'Use xctool' checkbox and specify the xctool reporter format to publish test results. No results published.");
         }
@@ -146,15 +157,15 @@ async function run() {
             var xctoolReporterString = xctoolReporter.split(":");
             if (xctoolReporterString && xctoolReporterString.length === 2)
             {
-                testResultsFiles = path.resolve(process.cwd(), xctoolReporterString[1].trim());
+                testResultsFiles = path.resolve(cwd, xctoolReporterString[1].trim());
             }
 
             if(testResultsFiles && 0 !== testResultsFiles.length) {
                 //check for pattern in testResultsFiles
                 if(testResultsFiles.indexOf('*') >= 0 || testResultsFiles.indexOf('?') >= 0) {
                     tl.debug('Pattern found in testResultsFiles parameter');
-                    var allFiles = tl.find(process.cwd());
-                    var matchingTestResultsFiles = tl.match(allFiles, testResultsFiles, { matchBase: true });
+                    var allFiles : string [] = tl.find(cwd);
+                    var matchingTestResultsFiles : string [] = tl.match(allFiles, testResultsFiles, { matchBase: true });
                 }
                 else {
                     tl.debug('No pattern found in testResultsFiles parameter');
@@ -176,17 +187,17 @@ async function run() {
 
         if(tl.getBoolInput('packageApp', true) && sdk !== 'iphonesimulator') {
             tl.debug('Packaging apps.');
-            var outPath = path.join(out, 'build.sym');
+            var outPath : string = path.join(out, 'build.sym');
             tl.debug('outPath: ' + outPath);
-            var appFolders = tl.glob(outPath + '/**/*.app')
+            var appFolders : string [] = tl.glob(outPath + '/**/*.app')
             if (appFolders) {
                 tl.debug(appFolders.length + ' apps found for packaging.');
-                var xcrunPath = tl.which('xcrun', true);
+                var xcrunPath : string = tl.which('xcrun', true);
                 for(var i = 0; i < appFolders.length; i++) {
-                    var app = appFolders.pop();
+                    var app : string = appFolders.pop();
                     tl.debug('Packaging ' + app);
-                    var ipa = app.substring(0, app.length-3) + 'ipa';
-                    var xcr = tl.createToolRunner(xcrunPath);
+                    var ipa : string = app.substring(0, app.length-3) + 'ipa';
+                    var xcr : ToolRunner = tl.createToolRunner(xcrunPath);
                     xcr.arg(['-sdk', sdk, 'PackageApplication', '-v', app, '-o', ipa]);
                     await xcr.exec();
                 }
@@ -199,10 +210,11 @@ async function run() {
     } finally {
         //delete provisioning profile if specified
         if(profileToDelete) {
+            tl.warning('Deleting provisioning profile: ' + profileToDelete);
             await sign.deleteProvisioningProfile(profileToDelete);
         }
 
-        //clean up the temporary keychain, so it is not used in future builds
+        //clean up the temporary keychain, so it is not used to search for code signing identity in future builds
         if(keychainToDelete) {
             await sign.deleteKeychain(keychainToDelete);
         }

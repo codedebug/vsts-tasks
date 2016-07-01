@@ -1,6 +1,7 @@
 /// <reference path="../../definitions/node.d.ts" />
 /// <reference path="../../definitions/Q.d.ts" />
 /// <reference path="../../definitions/vsts-task-lib.d.ts" />
+/// <reference path="../../definitions/ios-signing-common.d.ts" />
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -22,38 +23,31 @@ function run() {
             // Tooling
             //--------------------------------------------------------
             tl.setEnvVar('DEVELOPER_DIR', tl.getInput('xcodeDeveloperDir', false));
-            var useXctool = (tl.getInput('useXctool', false) == "true");
+            var useXctool = tl.getBoolInput('useXctool', false);
             var tool = useXctool ? tl.which('xctool', true) : tl.which('xcodebuild', true);
             tl.debug('Tool selected: ' + tool);
             //--------------------------------------------------------
             // Paths
             //--------------------------------------------------------
-            tl.cd(tl.getInput('cwd'));
-            var outPath = path.resolve(process.cwd(), tl.getInput('outputPattern', true));
+            var cwd = tl.getInput('cwd');
+            tl.cd(cwd);
+            var outPath = path.resolve(cwd, tl.getInput('outputPattern', true));
             tl.mkdirP(outPath);
             //--------------------------------------------------------
             // Xcode args
             //--------------------------------------------------------
-            /*var ws;
-            var wsPath = tl.getPathInput('xcWorkspacePath', false, false);
-            if(tl.filePathSupplied(wsPath)) {
-                ws = tl.globFirst(wsPath);
-                if (!ws) {
-                    throw 'Workspace is specified but it does not exist or is not a directory';
-                }
-            }*/
             var ws = tl.getPathInput('xcWorkspacePath', false, false);
             if (tl.filePathSupplied('xcWorkspacePath')) {
                 var workspaceMatches = tl.glob(ws);
                 tl.debug("Found " + workspaceMatches.length + ' workspaces matching.');
                 if (workspaceMatches.length > 0) {
-                    if (workspaceMatches.length > 1) {
-                        tl.warning('multiple workspace matches.  using first.');
-                    }
                     ws = workspaceMatches[0];
+                    if (workspaceMatches.length > 1) {
+                        tl.warning('Multiple xcode workspace matches were found. Using the first match: ' + ws);
+                    }
                 }
                 else {
-                    throw 'Workspace specified but it does not exist or is not a directory';
+                    throw 'Xcode workspace was specified but it does not exist or is not a directory';
                 }
             }
             var sdk = tl.getInput('sdk', false);
@@ -61,7 +55,7 @@ function run() {
             var scheme = tl.getInput('scheme', false);
             var xctoolReporter = tl.getInput('xctoolReporter', false);
             var actions = tl.getDelimitedInput('actions', ' ', true);
-            var out = path.resolve(process.cwd(), tl.getInput('outputPattern', true));
+            var out = path.resolve(cwd, tl.getInput('outputPattern', true));
             var packageApp = tl.getBoolInput('packageApp', true);
             var args = tl.getInput('args', false);
             //--------------------------------------------------------
@@ -71,7 +65,7 @@ function run() {
             var xcv = tl.createToolRunner(tool);
             xcv.arg('-version');
             yield xcv.exec(null);
-            //setup build
+            // --- Xcode build arguments ---
             var xcb = tl.createToolRunner(tool);
             xcb.argIf(sdk, ['-sdk', sdk]);
             xcb.argIf(configuration, ['-configuration', configuration]);
@@ -100,17 +94,18 @@ function run() {
                 var p12pwd = tl.getInput('p12pwd', false);
                 var provProfilePath = tl.getPathInput('provProfile', false);
                 var removeProfile = tl.getBoolInput('removeProfile', false);
-                //create a temporary keychain and install the p12 into that keychain
                 if (p12 && fs.lstatSync(p12).isFile()) {
-                    p12 = path.resolve(process.cwd(), p12);
-                    var keychain = path.join(process.cwd(), '_xcodetasktmp.keychain');
-                    var keychainPwd = Math.random();
-                    yield sign.installCertInTemporaryKeyChain(keychain, keychainPwd.toString(), p12, p12pwd);
+                    p12 = path.resolve(cwd, p12);
+                    var keychain = path.join(cwd, '_xcodetasktmp.keychain');
+                    var keychainPwd = Math.random().toString();
+                    //create a temporary keychain and install the p12 into that keychain
+                    yield sign.installCertInTemporaryKeychain(keychain, keychainPwd, p12, p12pwd);
                     xcb.arg('OTHER_CODE_SIGN_FLAGS=--keychain=' + keychain);
                     keychainToDelete = keychain;
                     //find signing identity
                     var signIdentity = yield sign.findSigningIdentity(keychain);
                     xcb.arg('CODE_SIGN_IDENTITY=' + signIdentity);
+                    //determine the provisioning profile UUID
                     var provProfileUUID = yield sign.getProvisioningProfileUUID(provProfilePath);
                     xcb.arg('PROVISIONING_PROFILE=' + provProfileUUID);
                     if (removeProfile) {
@@ -119,6 +114,16 @@ function run() {
                 }
             }
             else if (signMethod === 'id') {
+                var unlockDefaultKeychain = tl.getBoolInput('unlockDefaultKeychain');
+                var defaultKeychainPassword = tl.getInput('defaultKeychainPassword');
+                if (unlockDefaultKeychain) {
+                    var defaultKeychain = yield sign.getDefaultKeychainPath();
+                    yield sign.unlockKeychain(defaultKeychain, defaultKeychainPassword);
+                }
+                var signIdentity = tl.getInput('iosSigningIdentity');
+                xcb.arg('CODE_SIGN_IDENTITY=' + signIdentity);
+                var provProfileUUID = tl.getInput('provProfileUuid');
+                xcb.arg('PROVISIONING_PROFILE=' + provProfileUUID);
             }
             //run the Xcode build
             yield xcb.exec();
@@ -133,13 +138,13 @@ function run() {
             if (publishResults && useXctool && xctoolReporter && 0 !== xctoolReporter.length) {
                 var xctoolReporterString = xctoolReporter.split(":");
                 if (xctoolReporterString && xctoolReporterString.length === 2) {
-                    testResultsFiles = path.resolve(process.cwd(), xctoolReporterString[1].trim());
+                    testResultsFiles = path.resolve(cwd, xctoolReporterString[1].trim());
                 }
                 if (testResultsFiles && 0 !== testResultsFiles.length) {
                     //check for pattern in testResultsFiles
                     if (testResultsFiles.indexOf('*') >= 0 || testResultsFiles.indexOf('?') >= 0) {
                         tl.debug('Pattern found in testResultsFiles parameter');
-                        var allFiles = tl.find(process.cwd());
+                        var allFiles = tl.find(cwd);
                         var matchingTestResultsFiles = tl.match(allFiles, testResultsFiles, { matchBase: true });
                     }
                     else {
@@ -182,9 +187,10 @@ function run() {
         finally {
             //delete provisioning profile if specified
             if (profileToDelete) {
+                tl.warning('Deleting provisioning profile: ' + profileToDelete);
                 yield sign.deleteProvisioningProfile(profileToDelete);
             }
-            //clean up the temporary keychain, so it is not used in future builds
+            //clean up the temporary keychain, so it is not used to search for code signing identity in future builds
             if (keychainToDelete) {
                 yield sign.deleteKeychain(keychainToDelete);
             }
